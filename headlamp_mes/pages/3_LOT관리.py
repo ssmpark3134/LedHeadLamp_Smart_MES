@@ -7,8 +7,10 @@ from src.queries import (
     get_lot_list,
     get_fg_item_list, 
     get_rm_item_list, 
-    insert_lot
+    insert_lot,
+    get_fg_lot_quality_list,
 )
+from src.sensor_queries import format_timestamp, get_auto_inspections
 from src.ui import (
     setup_page,
     page_title,
@@ -73,6 +75,25 @@ else:
 # 완제품 재고 조회
 st.divider()
 st.header("📦 완제품 재고")
+auto_by_production = {
+    row["production_id"]: row for row in get_auto_inspections()
+}
+fg_lot_rows = []
+for row in get_fg_lot_quality_list():
+    item = dict(row)
+    auto = auto_by_production.get(item["production_id"])
+    fg_lot_rows.append({
+        "LOT 번호": item["lot_no"],
+        "품목": item["item_name"],
+        "현재 재고": item["current_qty"],
+        "생산일": item["produced_date"],
+        "자동검사": auto["final_result"] if auto else "미검사",
+        "최종 품질상태": item["quality_status"],
+        "자동 검사시간": format_timestamp(auto["created_at"]) if auto else "-",
+    })
+if fg_lot_rows:
+    st.dataframe(pd.DataFrame(fg_lot_rows), use_container_width=True, hide_index=True)
+
 fg_stock = [
     dict(row)
     for row in get_fg_stock_list()

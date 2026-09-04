@@ -3,8 +3,10 @@ import pandas as pd
 from src.queries import (
     get_lot_tracking_list,
     get_forward_lot_tracking,
-    get_backward_lot_tracking
+    get_backward_lot_tracking,
+    get_quality_by_production,
 )
+from src.sensor_queries import format_timestamp, get_auto_inspection
 from src.ui import (
     setup_page,
     page_title,
@@ -359,7 +361,33 @@ with backward_tab:
             )
 
             # ====================================
-            # 5. 사용 원자재 LOT
+            # 5. 자동 센서 검사 / MES 품질
+            # ====================================
+            st.divider()
+            st.subheader("📡 자동 센서 검사 / MES 품질")
+            auto = get_auto_inspection(production["production_id"])
+            quality = get_quality_by_production(production["production_id"])
+            if auto:
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("자동검사", auto["final_result"])
+                col2.metric("Temperature", f"{auto['temperature']:.1f} °C")
+                col3.metric("Humidity", f"{auto['humidity']:.1f} %")
+                col4.metric("CdS", int(auto["cds"]))
+                st.caption(f"자동 검사시간: {format_timestamp(auto['created_at'])}")
+            else:
+                st.info("연결된 LOT 대표 샘플 자동검사 결과가 없습니다.")
+            if quality:
+                st.success(
+                    f"MES 최종 품질: {quality['result']} / "
+                    f"양품 {quality['good_qty']:,} EA / "
+                    f"불량 {quality['defect_qty']:,} EA / "
+                    f"검사일 {quality['inspection_date']}"
+                )
+            else:
+                st.warning("MES 최종 품질: 검사대기")
+
+            # ====================================
+            # 6. 사용 원자재 LOT
             # ====================================
 
             st.divider()
@@ -463,4 +491,3 @@ with backward_tab:
                         f"**고객 PO**  \n"
                         f"{shipment['customer_po']}"
                     )
- 

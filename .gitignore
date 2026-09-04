@@ -19,3 +19,6 @@ sensor_project/sensor_data.db
 sensor_api/.venv/
 sensor_api/sensor_data.db
 sensor_api/__pycache__/
+
+# Local database backups
+backup/

@@ -1,6 +1,7 @@
 from src.db import fetch_all, fetch_dataframe, fetch_one, execute
 from datetime import datetime
 from src.db import get_connection
+from src.sensor_queries import has_passed_auto_inspection
 # ============================================
 # item 조회
 # ============================================
@@ -811,7 +812,7 @@ def insert_production(
                 lot_no,
                 product_item_id,
                 production_qty,
-                production_qty,
+                0,
                 production_date,
                 "완제품창고"
             )
@@ -1068,6 +1069,12 @@ def insert_quality(
 
     production_qty = production["production_qty"]
 
+    if result == "합격" and not has_passed_auto_inspection(production_id):
+        raise ValueError(
+            "연결된 LOT 대표 샘플 자동검사가 PASS여야 "
+            "최종 품질 합격을 등록할 수 있습니다."
+        )
+
     # 양품 + 불량 수량이 실제수량과 일치하는지 확인
     if good_qty + defect_qty != production_qty:
         raise ValueError(
@@ -1117,6 +1124,8 @@ def get_production_list_for_quality():
         SELECT
             p.production_id,
             p.production_no,
+            p.output_lot_id AS lot_id,
+            l.lot_no,
             i.item_code,
             i.item_name,
             p.production_qty,
@@ -1126,6 +1135,8 @@ def get_production_list_for_quality():
             ON p.order_id = po.order_id
         JOIN item AS i
             ON po.product_item_id = i.item_id
+        JOIN lot AS l
+            ON p.output_lot_id = l.lot_id
         LEFT JOIN quality AS q
             ON p.production_id = q.production_id
         WHERE q.quality_id IS NULL
@@ -1212,12 +1223,37 @@ def get_shippable_lot_list():
             SELECT 1
             FROM quality AS q
             WHERE q.production_id = p.production_id
+                AND q.result = '합격'
                 AND q.good_qty > 0
         )
 
         ORDER BY l.lot_id
     """
     return fetch_all(sql)
+
+
+def get_fg_lot_quality_list():
+    sql = """
+        SELECT l.lot_id, l.lot_no, i.item_code, i.item_name,
+               l.lot_qty, l.current_qty, l.produced_date,
+               p.production_id,
+               COALESCE(q.result, '검사대기') AS quality_status,
+               q.inspection_date
+        FROM lot AS l
+        JOIN item AS i ON i.item_id = l.item_id
+        LEFT JOIN production AS p ON p.output_lot_id = l.lot_id
+        LEFT JOIN quality AS q ON q.production_id = p.production_id
+        WHERE i.item_type = 'FG'
+        ORDER BY l.lot_id DESC
+    """
+    return fetch_all(sql)
+
+
+def get_quality_by_production(production_id):
+    return fetch_one(
+        "SELECT * FROM quality WHERE production_id = ?",
+        (production_id,),
+    )
 
 # ============================================
 # 출하 등록
@@ -1236,9 +1272,13 @@ def insert_shipment(
     # 출하 대상 LOT의 현재 재고를 조회한다.
     lot_sql = """
         SELECT
-            current_qty
-        FROM lot
-        WHERE lot_id = ?
+            l.current_qty,
+            q.result AS quality_result
+        FROM lot AS l
+        JOIN production AS p ON p.output_lot_id = l.lot_id
+        JOIN quality AS q ON q.production_id = p.production_id
+        WHERE l.lot_id = ?
+          AND q.result = '합격'
     """
     lot = fetch_one(
         lot_sql,
@@ -1247,7 +1287,7 @@ def insert_shipment(
 
     if lot is None:
         raise ValueError(
-            "존재하지 않는 LOT입니다."
+            "최종 품질 판정이 합격인 완제품 LOT만 출하할 수 있습니다."
         )
 
     current_qty = lot["current_qty"]
@@ -1318,6 +1358,7 @@ def get_forward_lot_tracking(material_lot_id):
             pm.used_qty,
 
             p.production_no,
+            p.production_id,
             p.production_date,
             p.worker_name,
             p.equipment_name,
@@ -1372,6 +1413,7 @@ def get_backward_lot_tracking(output_lot_id):
             fg_item.item_name AS output_item_name,
 
             p.production_no,
+            p.production_id,
             p.production_date,
             p.worker_name,
             p.equipment_name,
