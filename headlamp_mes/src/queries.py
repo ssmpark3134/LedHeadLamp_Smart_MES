@@ -324,7 +324,6 @@ def insert_lot(
         INSERT INTO lot (
             lot_no,
             item_id,
-            lot_type,
             lot_qty,
             current_qty,
             received_date,
@@ -332,14 +331,13 @@ def insert_lot(
             expire_date,
             location
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """
     return execute(
         sql,
         (
             lot_no,
             item_id,
-            "RM",
             lot_qty,
             lot_qty,
             received_date,
@@ -799,13 +797,12 @@ def insert_production(
             INSERT INTO lot (
                 lot_no,
                 item_id,
-                lot_type,
                 lot_qty,
                 current_qty,
                 produced_date,
                 location
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?)
         """
 
         cursor = connection.execute(
@@ -813,7 +810,6 @@ def insert_production(
             (
                 lot_no,
                 product_item_id,
-                "FG",
                 production_qty,
                 production_qty,
                 production_date,
