@@ -1,0 +1,775 @@
+\#include \<LiquidCrystal\_I2C.h>
+\#include \<DHT.h>
+\#include \<DHT\_U.h>
+
+// ========================================
+// Serial 출력 타이밍
+// ========================================
+
+unsigned long previousSerialTime = 0;
+const unsigned long serialInterval = 1000;
+
+// ========================================
+// 핀 설정
+// ========================================
+
+// Tilt
+const int pinTilt = 5;
+
+// Hit
+const int pinHit = 6;
+
+// Buzzer
+const int pinBuzzer = 8;
+
+// DHT
+const int pinDHT = 9;
+
+// 초음파
+const int pinEcho = 10;
+const int pinTrig = 11;
+
+// Green LED
+const int pinGreenLed = 12;
+
+// Switch
+const int pinSwitch = 2;
+const int pinSwitchVcc = 3;
+const int pinSwitchGnd = 4;
+
+// CdS
+const int pinCds = A1;
+
+// 화재감지
+const int pinFireDigital = A0;
+const int pinFireAnalog = A2;
+
+// ========================================
+// Switch Toggle
+// ========================================
+
+bool systemOn = false;
+int previousSwitchState = HIGH;
+
+unsigned long lastSwitchTime = 0;
+const unsigned long debounceDelay = 50;
+
+unsigned long systemOnTime = 0;
+
+// ========================================
+// DHT
+// ========================================
+
+\#define DHTTYPE DHT11
+
+DHT dht(pinDHT, DHTTYPE);
+
+// ========================================
+// LCD
+// ========================================
+
+LiquidCrystal\_I2C lcd(0x27, 16, 2);
+
+// ========================================
+// 검사 기준값
+// ========================================
+
+// 제품 감지 거리
+const float productDistance = 8.0;
+
+// 온도 정상 범위
+const float tempMin = 20.0;
+const float tempMax = 28.0;
+
+// 습도 정상 범위
+const float humidityMin = 48.0;
+const float humidityMax = 58.0;
+
+// CdS 정상 범위
+const int cdsMin = 50;
+const int cdsMax = 200;
+
+// 정상 조건 유지 시간
+const unsigned long inspectionDuration = 2000;
+
+// ========================================
+// 검사 상태
+// ========================================
+
+bool productDetected = false;
+bool inspectionRunning = false;
+bool inspectionPassed = false;
+
+unsigned long inspectionStartTime = 0;
+
+// ========================================
+// Green LED
+// ========================================
+
+unsigned long previousGreenBlinkTime = 0;
+bool greenLedState = false;
+
+// 이상 발생 점멸
+const unsigned long errorBlinkInterval = 100;
+
+// ========================================
+// Buzzer
+// ========================================
+
+unsigned long previousBeepTime = 0;
+bool buzzerState = false;
+
+// 제품 감지 시 천천히 삐삐
+const unsigned long productBeepInterval = 700;
+
+// ========================================
+// 함수 선언
+// ========================================
+
+void showLCD(const char\* line1, const char\* line2);
+
+void showSensorError(
+bool tiltNormal,
+bool hitNormal,
+bool fireNormal,
+bool tempNormal,
+bool humidityNormal,
+bool cdsNormal
+);
+
+float getDistance();
+
+void greenLedBlink(unsigned long interval);
+
+void productBeep();
+
+// ========================================
+// setup
+// ========================================
+
+void setup()
+{
+Serial.begin(115200);
+```
+// Tilt
+pinMode(pinTilt, INPUT_PULLUP);
+
+// Hit
+pinMode(pinHit, INPUT_PULLUP);
+
+// Switch
+pinMode(pinSwitch, INPUT_PULLUP);
+
+pinMode(pinSwitchVcc, OUTPUT);
+pinMode(pinSwitchGnd, OUTPUT);
+
+digitalWrite(pinSwitchVcc, HIGH);
+digitalWrite(pinSwitchGnd, LOW);
+
+// CdS
+pinMode(pinCds, INPUT);
+
+// Buzzer
+pinMode(pinBuzzer, OUTPUT);
+digitalWrite(pinBuzzer, LOW);
+
+// 초음파
+pinMode(pinTrig, OUTPUT);
+pinMode(pinEcho, INPUT);
+
+digitalWrite(pinTrig, LOW);
+
+// Green LED
+pinMode(pinGreenLed, OUTPUT);
+digitalWrite(pinGreenLed, LOW);
+
+// Fire Digital
+pinMode(pinFireDigital, INPUT);
+
+// Fire Analog
+pinMode(pinFireAnalog, INPUT);
+
+// DHT
+dht.begin();
+
+// LCD
+lcd.init();
+lcd.backlight();
+
+showLCD("SYSTEM OFF", "");
+```
+
+}
+
+// ========================================
+// loop
+// ========================================
+
+void loop()
+{
+// ========================================
+// Switch
+// ========================================
+```
+int switchValue = digitalRead(pinSwitch);
+
+if (
+    previousSwitchState == HIGH &&
+    switchValue == LOW &&
+    millis() - lastSwitchTime >= debounceDelay
+)
+{
+    lastSwitchTime = millis();
+
+    systemOn = !systemOn;
+
+    if (systemOn)
+    {
+        Serial.println("SYSTEM ON");
+
+        systemOnTime = millis();
+
+        inspectionRunning = false;
+        inspectionPassed = false;
+        inspectionStartTime = 0;
+
+        showLCD("SYSTEM ON", "");
+    }
+    else
+    {
+        Serial.println("SYSTEM OFF");
+
+        digitalWrite(pinBuzzer, LOW);
+        digitalWrite(pinGreenLed, LOW);
+
+        buzzerState = false;
+        greenLedState = false;
+
+        inspectionRunning = false;
+        inspectionPassed = false;
+        inspectionStartTime = 0;
+
+        showLCD("SYSTEM OFF", "");
+    }
+}
+
+previousSwitchState = switchValue;
+
+// ========================================
+// SYSTEM OFF
+// ========================================
+
+if (!systemOn)
+{
+    digitalWrite(pinBuzzer, LOW);
+    digitalWrite(pinGreenLed, LOW);
+
+    delay(10);
+    return;
+}
+
+// ========================================
+// 센서값 읽기
+// ========================================
+
+int tiltValue = digitalRead(pinTilt);
+
+int hitValue = digitalRead(pinHit);
+
+int cdsValue = analogRead(pinCds);
+
+float temperature = dht.readTemperature();
+
+float humidity = dht.readHumidity();
+
+float distance = getDistance();
+
+
+// 화재센서 Analog 값
+int fireAnalog = analogRead(pinFireAnalog);
+
+// 최종 화재 판정값
+int fireDigital;
+
+if (fireAnalog < 100)
+{
+    fireDigital = 1;
+}
+else
+{
+    fireDigital = 0;
+}
+
+// ========================================
+// Serial 출력
+// ========================================
+
+if (millis() - previousSerialTime >= serialInterval)
+{
+    previousSerialTime = millis();
+
+    Serial.println("===== SYSTEM ON =====");
+
+    Serial.print("TILT : ");
+    Serial.println(tiltValue);
+
+    Serial.print("HIT : ");
+    Serial.println(hitValue);
+
+    Serial.print("CDS : ");
+    Serial.println(cdsValue);
+
+    Serial.print("Temperature : ");
+    Serial.print(temperature);
+    Serial.println(" C");
+
+    Serial.print("Humidity : ");
+    Serial.print(humidity);
+    Serial.println(" %");
+
+    Serial.print("Distance : ");
+    Serial.print(distance);
+    Serial.println(" cm");
+
+    Serial.print("FIRE Digital : ");
+    Serial.println(fireDigital);
+
+    Serial.println();
+}
+
+// ========================================
+// 센서 정상 여부
+// ========================================
+
+bool tiltNormal =
+    (tiltValue == LOW);
+
+bool hitNormal =
+    (hitValue == LOW);
+
+// 현재는 기존 Digital 판정 유지
+// ========================================
+// 화재 판정
+// ========================================
+
+// Analog 값이 100 미만이면 화재 감지
+bool fireDetected = (fireAnalog < 100);
+
+// 화재가 감지되지 않았으면 정상
+bool fireNormal = !fireDetected;
+
+bool tempNormal =
+    !isnan(temperature) &&
+    temperature >= tempMin &&
+    temperature <= tempMax;
+
+bool humidityNormal =
+    !isnan(humidity) &&
+    humidity >= humidityMin &&
+    humidity <= humidityMax;
+
+bool cdsNormal =
+    cdsValue >= cdsMin &&
+    cdsValue <= cdsMax;
+
+// ========================================
+// 전체 센서 정상 여부
+// ========================================
+
+bool sensorNormal =
+    tiltNormal &&
+    hitNormal &&
+    fireNormal &&
+    tempNormal &&
+    humidityNormal &&
+    cdsNormal;
+
+// ========================================
+// 제품 감지
+// ========================================
+
+productDetected =
+    distance > 0 &&
+    distance <= productDistance;
+
+// ========================================
+// 제품 없음
+// ========================================
+
+if (!productDetected)
+{
+    inspectionRunning = false;
+    inspectionPassed = false;
+    inspectionStartTime = 0;
+
+    // ====================================
+    // 센서 정상
+    // ====================================
+
+    if (sensorNormal)
+    {
+        digitalWrite(pinGreenLed, HIGH);
+        greenLedState = true;
+
+        digitalWrite(pinBuzzer, LOW);
+        buzzerState = false;
+
+        if (millis() - systemOnTime >= 2000)
+        {
+            showLCD(
+                "SYSTEM RUNNING",
+                "NORMAL"
+            );
+        }
+    }
+
+    // ====================================
+    // 센서 이상
+    // ====================================
+
+    else
+    {
+        // 이상 발생 → Green 빠르게 깜빡임
+        greenLedBlink(errorBlinkInterval);
+
+        // 경고음
+        digitalWrite(pinBuzzer, HIGH);
+        buzzerState = true;
+
+        showSensorError(
+            tiltNormal,
+            hitNormal,
+            fireNormal,
+            tempNormal,
+            humidityNormal,
+            cdsNormal
+        );
+    }
+}
+
+// ========================================
+// 제품 있음
+// ========================================
+
+else
+{
+    // ====================================
+    // 센서 이상
+    // ====================================
+
+    if (!sensorNormal)
+    {
+        inspectionRunning = false;
+        inspectionPassed = false;
+
+        // 2초 검사 타이머 초기화
+        inspectionStartTime = 0;
+
+        // Green 빠르게 깜빡임
+        greenLedBlink(errorBlinkInterval);
+
+        // 경고음
+        digitalWrite(pinBuzzer, HIGH);
+        buzzerState = true;
+
+        showSensorError(
+            tiltNormal,
+            hitNormal,
+            fireNormal,
+            tempNormal,
+            humidityNormal,
+            cdsNormal
+        );
+    }
+
+    // ====================================
+    // 센서 정상
+    // ====================================
+
+    else
+    {
+        // =================================
+        // 아직 PASS 전
+        // =================================
+
+        if (!inspectionPassed)
+        {
+            // 검사 최초 시작
+            if (!inspectionRunning)
+            {
+                inspectionRunning = true;
+
+                inspectionStartTime = millis();
+
+                showLCD(
+                    "INSPECTION",
+                    "CHECKING..."
+                );
+
+                Serial.println(
+                    "INSPECTION : START"
+                );
+            }
+
+            // 검사 중 Green 천천히 깜빡임
+            digitalWrite(pinGreenLed, HIGH);
+            greenLedState = true;
+
+            // 제품 감지음
+            productBeep();
+
+            // =================================
+            // 정상 상태 2초 유지
+            // =================================
+
+            if (
+                millis() - inspectionStartTime
+                >= inspectionDuration
+            )
+            {
+                inspectionPassed = true;
+                inspectionRunning = false;
+
+                // PASS → Green 계속 ON
+                digitalWrite(
+                    pinGreenLed,
+                    HIGH
+                );
+
+                greenLedState = true;
+
+                // 부저 OFF
+                digitalWrite(
+                    pinBuzzer,
+                    LOW
+                );
+
+                buzzerState = false;
+
+                showLCD(
+                    "INSPECTION",
+                    "PASS"
+                );
+
+                Serial.println(
+                    "INSPECTION : PASS"
+                );
+            }
+        }
+
+        // =================================
+        // PASS 완료
+        // =================================
+
+        else
+        {
+            // Green 계속 ON
+            digitalWrite(
+                pinGreenLed,
+                HIGH
+            );
+
+            greenLedState = true;
+
+            // Buzzer OFF
+            digitalWrite(
+                pinBuzzer,
+                LOW
+            );
+
+            buzzerState = false;
+
+            // PASS 화면 유지
+            showLCD(
+                "INSPECTION",
+                "PASS"
+            );
+        }
+    }
+}
+
+delay(50);
+```
+
+}
+
+// ========================================
+// Green LED 깜빡임
+// ========================================
+
+void greenLedBlink(unsigned long interval)
+{
+if (
+millis() - previousGreenBlinkTime
+\>= interval
+)
+{
+previousGreenBlinkTime = millis();
+```
+    greenLedState = !greenLedState;
+
+    digitalWrite(
+        pinGreenLed,
+        greenLedState
+    );
+}
+```
+
+}
+
+// ========================================
+// 제품 감지 Buzzer
+// ========================================
+
+void productBeep()
+{
+if (
+millis() - previousBeepTime
+\>= productBeepInterval
+)
+{
+previousBeepTime = millis();
+```
+    buzzerState = !buzzerState;
+
+    digitalWrite(
+        pinBuzzer,
+        buzzerState
+    );
+}
+```
+
+}
+
+// ========================================
+// 센서 오류 LCD
+// ========================================
+
+void showSensorError(
+bool tiltNormal,
+bool hitNormal,
+bool fireNormal,
+bool tempNormal,
+bool humidityNormal,
+bool cdsNormal
+)
+{
+if (!fireNormal)
+{
+showLCD(
+"FIRE ERROR",
+"CHECK SENSOR"
+);
+}
+```
+else if (!tiltNormal)
+{
+    showLCD(
+        "TILT ERROR",
+        "CHECK SENSOR"
+    );
+}
+
+else if (!hitNormal)
+{
+    showLCD(
+        "HIT ERROR",
+        "CHECK SENSOR"
+    );
+}
+
+else if (!tempNormal)
+{
+    showLCD(
+        "TEMP ERROR",
+        "CHECK SENSOR"
+    );
+}
+
+else if (!humidityNormal)
+{
+    showLCD(
+        "HUMID ERROR",
+        "CHECK SENSOR"
+    );
+}
+
+else if (!cdsNormal)
+{
+    showLCD(
+        "CDS ERROR",
+        "CHECK SENSOR"
+    );
+}
+```
+
+}
+
+// ========================================
+// LCD 출력
+// ========================================
+
+void showLCD(
+const char\* line1,
+const char\* line2
+)
+{
+static String previousLine1 = "";
+static String previousLine2 = "";
+```
+// 같은 내용이면 LCD를 다시 clear하지 않음
+if (
+    previousLine1 == line1 &&
+    previousLine2 == line2
+)
+{
+    return;
+}
+
+previousLine1 = line1;
+previousLine2 = line2;
+
+lcd.clear();
+
+lcd.setCursor(0, 0);
+lcd.print(line1);
+
+lcd.setCursor(0, 1);
+lcd.print(line2);
+```
+
+}
+
+// ========================================
+// 초음파 거리 측정
+// ========================================
+
+float getDistance()
+{
+digitalWrite(pinTrig, LOW);
+delayMicroseconds(2);
+```
+digitalWrite(pinTrig, HIGH);
+delayMicroseconds(10);
+
+digitalWrite(pinTrig, LOW);
+
+unsigned long duration =
+    pulseIn(
+        pinEcho,
+        HIGH,
+        30000
+    );
+
+if (duration == 0)
+{
+    return -1;
+}
+
+float distance =
+    duration * 0.0343 / 2.0;
+
+return distance;
+```
+
+}
